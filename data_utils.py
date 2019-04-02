@@ -26,76 +26,102 @@ import numpy as np
 import torch
 from torch.utils import data
 
-from pytorch_pretrained_bert import BertTokenizer
 
-tokenizer = BertTokenizer.from_pretrained('bert-base-cased', do_lower_case=False)
-VOCAB = ('<PAD>', 'O', 'I-LOC', 'B-PER', 'I-PER', 'I-ORG', 'I-MISC', 'B-MISC', 'B-LOC', 'B-ORG')
+#tokenizer = BertTokenizer.from_pretrained('bert-base-cased', do_lower_case=False)
+# TODO: New tokenizer
+
+VOCAB = ('<PAD>', 'O', 'I-LOC', 'B-PER', 'I-PER', 'I-ORG',
+         'I-MISC', 'B-MISC', 'B-LOC', 'B-ORG')
 tag2idx = {tag: idx for idx, tag in enumerate(VOCAB)}
 idx2tag = {idx: tag for idx, tag in enumerate(VOCAB)}
 
 class NerDataset(data.Dataset):
-    def __init__(self, fpath):
-        """
-        fpath: [train|valid|test].txt
-        """
-        entries = open(fpath, 'r').read().strip().split("\n\n")
-        sents, tags_li = [], [] # list of lists
-        for entry in entries:
-            words = [line.split()[0] for line in entry.splitlines()]
-            tags = ([line.split()[-1] for line in entry.splitlines()])
-            sents.append(["[CLS]"] + words + ["[SEP]"])
-            tags_li.append(["<PAD>"] + tags + ["<PAD>"])
-        self.sents, self.tags_li = sents, tags_li
+  def __init__(self, fpath):
+    """
+    fpath: [train|valid|test].txt
+    """
+    self.examples = []
+    with open(train_sentences_file) as f:
+      _, _ = f.readline(), f.readline() # some stuff at the start
 
-    def __len__(self):
-        return len(self.sents)
+      current_sentence = []
 
-    def __getitem__(self, idx):
-        words, tags = self.sents[idx], self.tags_li[idx] # words, tags: string list
+      for line in f.readlines():
+        fields = line.strip().split()
+        if len(fields) == 0:
+          words, tags, shapes = zip(*current_sentence)
+          word_idxs = [vocab[word] if word in vocab else unk_idx
+              for word in words]
+          self.examples.append((word_idxs, tags, shapes))
+          current_sentence = []
+        else:
+          assert len(fields) == 4
+          word, _, _, tag = fields
+          tag_idx = TAGS.index(tag)
+          shape_idx = get_shape_idx(word)
+          current_sentence.append((word.lower(), tag_idx, shape_idx))
+       assert current_sentence == []
 
-        # We give credits only to the first piece.
-        x, y = [], [] # list of ids
-        is_heads = [] # list. 1: the token is the first piece of a word
-        for w, t in zip(words, tags):
-            tokens = tokenizer.tokenize(w) if w not in ("[CLS]", "[SEP]") else [w]
-            xx = tokenizer.convert_tokens_to_ids(tokens)
 
-            is_head = [1] + [0]*(len(tokens) - 1)
+    entries = open(fpath, 'r').read().strip().split("\n\n")
+    sents, tags_li = [], [] # list of lists
+    for entry in entries:
+      words = [line.split()[0] for line in entry.splitlines()]
+      tags = ([line.split()[-1] for line in entry.splitlines()])
+      sents.append(["[CLS]"] + words + ["[SEP]"])
+      tags_li.append(["<PAD>"] + tags + ["<PAD>"])
+    self.sents, self.tags_li = sents, tags_li
 
-            t = [t] + ["<PAD>"] * (len(tokens) - 1)  # <PAD>: no decision
-            yy = [tag2idx[each] for each in t]  # (T,)
+  def __len__(self):
+    return len(self.examples)
 
-            x.extend(xx)
-            is_heads.extend(is_head)
-            y.extend(yy)
+  def __getitem__(self, idx):
+    words, tags = self.sents[idx], self.tags_li[idx] # words, tags: string list
 
-        assert len(x)==len(y)==len(is_heads), f"len(x)={len(x)}, len(y)={len(y)}, len(is_heads)={len(is_heads)}"
+    # We give credits only to the first piece.
+    x, y = [], [] # list of ids
+    is_heads = [] # list. 1: the token is the first piece of a word
+    for w, t in zip(words, tags):
+      tokens = tokenizer.tokenize(w) if w not in ("[CLS]", "[SEP]") else [w]
+      xx = tokenizer.convert_tokens_to_ids(tokens)
 
-        # seqlen
-        seqlen = len(y)
+      is_head = [1] + [0]*(len(tokens) - 1)
 
-        # to string
-        words = " ".join(words)
-        tags = " ".join(tags)
-        return words, x, is_heads, tags, y, seqlen
+      t = [t] + ["<PAD>"] * (len(tokens) - 1)  # <PAD>: no decision
+      yy = [tag2idx[each] for each in t]  # (T,)
+
+      x.extend(xx)
+      is_heads.extend(is_head)
+      y.extend(yy)
+
+    assert len(x)==len(y)==len(is_heads), f"len(x)={len(x)}, len(y)={len(y)}, len(is_heads)={len(is_heads)}"
+
+    # seqlen
+    seqlen = len(y)
+
+    # to string
+    words = " ".join(words)
+    tags = " ".join(tags)
+    return words, x, is_heads, tags, y, seqlen
 
 
 def pad(batch):
-    '''Pads to the longest sample'''
-    f = lambda x: [sample[x] for sample in batch]
-    words = f(0)
-    is_heads = f(2)
-    tags = f(3)
-    seqlens = f(-1)
-    maxlen = np.array(seqlens).max()
+  '''Pads to the longest sample'''
+  f = lambda x: [sample[x] for sample in batch]
+  words = f(0)
+  is_heads = f(2)
+  tags = f(3)
+  seqlens = f(-1)
+  maxlen = np.array(seqlens).max()
 
-    f = lambda x, seqlen: [sample[x] + [0] * (seqlen - len(sample[x])) for sample in batch] # 0: <pad>
-    x = f(1, maxlen)
-    y = f(-2, maxlen)
+  f = lambda x, seqlen: [sample[x] + [0] * (seqlen - len(sample[x])) for sample in batch] # 0: <pad>
+  x = f(1, maxlen)
+  y = f(-2, maxlen)
 
 
-    f = torch.LongTensor
+  f = torch.LongTensor
 
-    return words, f(x), is_heads, tags, f(y), seqlens
+  return words, f(x), is_heads, tags, f(y), seqlens
+
 
 
